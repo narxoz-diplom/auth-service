@@ -1,26 +1,32 @@
 package com.microservices.authservice.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.microservices.authservice.client.KeycloakAdminClient;
+import com.microservices.authservice.client.KeycloakTokenClient;
+import com.microservices.authservice.config.FeignConfig;
 import com.microservices.authservice.dto.RegistrationRequest;
 import com.microservices.authservice.dto.UpdateUserRequest;
 import com.microservices.authservice.dto.UserInfo;
+import com.microservices.authservice.dto.keycloak.KeycloakRole;
+import com.microservices.authservice.dto.keycloak.KeycloakTokenResponse;
+import com.microservices.authservice.dto.keycloak.KeycloakUser;
+import com.microservices.authservice.dto.keycloak.PasswordRequest;
+import feign.Response;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
-import java.util.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
-@Service
 @Slf4j
+@Service
+@RequiredArgsConstructor
 public class KeycloakService {
-
-    @Value("${keycloak.url}")
-    private String keycloakUrl;
 
     @Value("${keycloak.realm}")
     private String realm;
@@ -28,44 +34,43 @@ public class KeycloakService {
     @Value("${keycloak.client-id}")
     private String clientId;
 
+    @Value("${keycloak.admin.client-id}")
+    private String adminClientId;
+
+    @Value("${keycloak.admin.client-secret}")
+    private String adminClientSecret;
+
     @Value("${keycloak.admin.username}")
     private String adminUsername;
 
     @Value("${keycloak.admin.password}")
     private String adminPassword;
 
-    private final HttpClient httpClient;
+    private final KeycloakTokenClient tokenClient;
+    private final KeycloakAdminClient adminClient;
     private final ObjectMapper objectMapper;
 
-    public KeycloakService(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
-    }
 
     public String getAdminToken() {
         try {
-            String tokenUrl = keycloakUrl + "/realms/master/protocol/openid-connect/token";
-            String body = "grant_type=password&client_id=admin-cli&username=" + adminUsername + "&password=" + adminPassword;
+            Map<String, Object> formParams = new HashMap<>();
+            formParams.put("grant_type", "client_credentials");
+            formParams.put("client_id", adminClientId);
+            formParams.put("client_secret", adminClientSecret);
 
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(tokenUrl))
-                    .header("Content-Type", "application/x-www-form-urlencoded")
-                    .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .build();
+            KeycloakTokenResponse response = tokenClient.getAdminToken("master", formParams);
 
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() == 200) {
-                Map<String, Object> tokenData = objectMapper.readValue(response.body(), Map.class);
-                return (String) tokenData.get("access_token");
+            if (response != null && response.getAccessToken() != null) {
+                log.info("Successfully obtained admin token");
+                return response.getAccessToken();
             } else {
-                log.error("Failed to get admin token. Status: {}, Body: {}", response.statusCode(), response.body());
+                log.error("Failed to get admin token. Response is null or missing access_token");
+                throw new RuntimeException("Failed to get admin token");
             }
         } catch (Exception e) {
             log.error("Error getting admin token", e);
+            throw new RuntimeException("Error getting admin token: " + e.getMessage(), e);
         }
-        return null;
     }
 
     public String createUser(RegistrationRequest registrationRequest) {
@@ -75,69 +80,54 @@ public class KeycloakService {
         }
 
         try {
-            String usersUrl = keycloakUrl + "/admin/realms/" + realm + "/users";
-
-            Map<String, Object> userData = new HashMap<>();
-            userData.put("username", registrationRequest.getUsername());
-            userData.put("email", registrationRequest.getEmail());
-            userData.put("firstName", registrationRequest.getFirstName());
-            userData.put("lastName", registrationRequest.getLastName());
-            userData.put("enabled", true);
-            userData.put("emailVerified", true);
-
-            String jsonBody = objectMapper.writeValueAsString(userData);
-
-            HttpRequest httpRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(usersUrl))
-                    .header("Authorization", "Bearer " + adminToken)
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+            KeycloakUser keycloakUser = KeycloakUser.builder()
+                    .username(registrationRequest.getUsername())
+                    .email(registrationRequest.getEmail())
+                    .firstName(registrationRequest.getFirstName())
+                    .lastName(registrationRequest.getLastName())
+                    .enabled(true)
+                    .emailVerified(true)
                     .build();
 
-            HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+            FeignConfig.setAdminToken(adminToken);
+            try {
+                Response response = adminClient.createUser(realm, keycloakUser);
 
-            String userId = null;
-            if (response.statusCode() == 201) {
-                String location = response.headers().firstValue("Location").orElse(null);
-                if (location != null) {
-                    userId = location.substring(location.lastIndexOf("/") + 1);
-                }
-            } else if (response.statusCode() == 409) {
-                log.warn("User already exists: {}", registrationRequest.getUsername());
-                throw new IllegalArgumentException("User with this username or email already exists");
-            } else {
-                log.error("Failed to create user. Status: {}, Body: {}", response.statusCode(), response.body());
-                throw new RuntimeException("Failed to create user: " + response.body());
-            }
-
-            // Set password
-            if (userId != null) {
-                String passwordUrl = keycloakUrl + "/admin/realms/" + realm + "/users/" + userId + "/reset-password";
-
-                Map<String, Object> passwordData = new HashMap<>();
-                passwordData.put("type", "password");
-                passwordData.put("value", registrationRequest.getPassword());
-                passwordData.put("temporary", false);
-
-                String passwordJson = objectMapper.writeValueAsString(passwordData);
-
-                HttpRequest passwordRequest = HttpRequest.newBuilder()
-                        .uri(URI.create(passwordUrl))
-                        .header("Authorization", "Bearer " + adminToken)
-                        .header("Content-Type", "application/json")
-                        .PUT(HttpRequest.BodyPublishers.ofString(passwordJson))
-                        .build();
-
-                HttpResponse<String> passwordResponse = httpClient.send(passwordRequest, HttpResponse.BodyHandlers.ofString());
-
-                if (passwordResponse.statusCode() == 204) {
-                    log.info("Password set successfully for user: {}", registrationRequest.getUsername());
-                    return userId;
+                String userId = null;
+                if (response.status() == 201) {
+                    String location = response.headers().get("Location").stream()
+                            .findFirst()
+                            .orElse(null);
+                    if (location != null) {
+                        userId = location.substring(location.lastIndexOf("/") + 1);
+                    }
+                } else if (response.status() == 409) {
+                    log.warn("User already exists: {}", registrationRequest.getUsername());
+                    throw new IllegalArgumentException("User with this username or email already exists");
                 } else {
-                    log.error("Failed to set password. Status: {}, Body: {}", passwordResponse.statusCode(), passwordResponse.body());
-                    deleteUser(userId);
-                    throw new RuntimeException("Failed to set password");
+                    log.error("Failed to create user. Status: {}", response.status());
+                    throw new RuntimeException("Failed to create user");
                 }
+
+                if (userId != null) {
+                    PasswordRequest passwordRequest = PasswordRequest.builder()
+                            .type("password")
+                            .value(registrationRequest.getPassword())
+                            .temporary(false)
+                            .build();
+
+                    try {
+                        adminClient.resetPassword(realm, userId, passwordRequest);
+                        log.info("Password set successfully for user: {}", registrationRequest.getUsername());
+                        return userId;
+                    } catch (Exception e) {
+                        log.error("Failed to set password", e);
+                        deleteUser(userId);
+                        throw new RuntimeException("Failed to set password", e);
+                    }
+                }
+            } finally {
+                FeignConfig.clearAdminToken();
             }
         } catch (IllegalArgumentException e) {
             throw e;
@@ -157,47 +147,27 @@ public class KeycloakService {
         try {
             log.info("Attempting to assign role '{}' to user '{}'", roleName, userId);
 
-            // Get role from realm
-            String rolesUrl = keycloakUrl + "/admin/realms/" + realm + "/roles/" + roleName;
-            HttpRequest getRoleRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(rolesUrl))
-                    .header("Authorization", "Bearer " + adminToken)
-                    .GET()
-                    .build();
+            FeignConfig.setAdminToken(adminToken);
+            try {
+                KeycloakRole role = adminClient.getRole(realm, roleName);
+                if (role == null) {
+                    log.error("Role '{}' not found in realm '{}'", roleName, realm);
+                    return false;
+                }
 
-            HttpResponse<String> roleResponse = httpClient.send(getRoleRequest, HttpResponse.BodyHandlers.ofString());
-            if (roleResponse.statusCode() != 200) {
-                log.error("Role '{}' not found in realm '{}'. Status: {}, Body: {}",
-                        roleName, realm, roleResponse.statusCode(), roleResponse.body());
-                return false;
-            }
+                log.debug("Retrieved role: {}", role);
 
-            String roleJson = roleResponse.body();
-            log.debug("Retrieved role JSON: {}", roleJson);
-
-            // Assign role to user
-            String assignUrl = keycloakUrl + "/admin/realms/" + realm + "/users/" + userId + "/role-mappings/realm";
-            String requestBody = "[" + roleJson + "]";
-
-            HttpRequest assignRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(assignUrl))
-                    .header("Authorization", "Bearer " + adminToken)
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(requestBody))
-                    .build();
-
-            HttpResponse<String> assignResponse = httpClient.send(assignRequest, HttpResponse.BodyHandlers.ofString());
-
-            if (assignResponse.statusCode() == 204 || assignResponse.statusCode() == 200) {
-                log.info("✅ Role '{}' successfully assigned to user '{}'", roleName, userId);
+                adminClient.assignRole(realm, userId, List.of(role));
+                log.info("Role '{}' successfully assigned to user '{}'", roleName, userId);
                 return verifyRoleAssignment(userId, roleName, adminToken);
-            } else {
-                log.error("❌ Failed to assign role '{}' to user '{}'. Status: {}, Body: {}",
-                        roleName, userId, assignResponse.statusCode(), assignResponse.body());
+            } catch (Exception e) {
+                log.error("Failed to assign role '{}' to user '{}'", roleName, userId, e);
                 return false;
+            } finally {
+                FeignConfig.clearAdminToken();
             }
         } catch (Exception e) {
-            log.error("❌ Exception while assigning role '{}' to user '{}': {}", roleName, userId, e.getMessage(), e);
+            log.error("Exception while assigning role '{}' to user '{}': {}", roleName, userId, e.getMessage(), e);
             return false;
         }
     }
@@ -209,15 +179,16 @@ public class KeycloakService {
         }
 
         try {
-            String rolesUrl = keycloakUrl + "/admin/realms/" + realm + "/roles/" + roleName;
-            HttpRequest getRoleRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(rolesUrl))
-                    .header("Authorization", "Bearer " + adminToken)
-                    .GET()
-                    .build();
-
-            HttpResponse<String> roleResponse = httpClient.send(getRoleRequest, HttpResponse.BodyHandlers.ofString());
-            return roleResponse.statusCode() == 200;
+            FeignConfig.setAdminToken(adminToken);
+            try {
+                KeycloakRole role = adminClient.getRole(realm, roleName);
+                return role != null;
+            } catch (Exception e) {
+                log.error("Error checking if role exists", e);
+                return false;
+            } finally {
+                FeignConfig.clearAdminToken();
+            }
         } catch (Exception e) {
             log.error("Error checking if role exists", e);
             return false;
@@ -226,20 +197,18 @@ public class KeycloakService {
 
     private boolean verifyRoleAssignment(String userId, String roleName, String adminToken) {
         try {
-            String rolesUrl = keycloakUrl + "/admin/realms/" + realm + "/users/" + userId + "/role-mappings/realm";
-            HttpRequest getRolesRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(rolesUrl))
-                    .header("Authorization", "Bearer " + adminToken)
-                    .GET()
-                    .build();
-
-            HttpResponse<String> rolesResponse = httpClient.send(getRolesRequest, HttpResponse.BodyHandlers.ofString());
-            if (rolesResponse.statusCode() == 200) {
-                String rolesJson = rolesResponse.body();
-                log.debug("User roles: {}", rolesJson);
-                return rolesJson != null && rolesJson.contains("\"name\":\"" + roleName + "\"");
+            FeignConfig.setAdminToken(adminToken);
+            try {
+                List<KeycloakRole> roles = adminClient.getUserRoles(realm, userId);
+                if (roles != null) {
+                    log.debug("User roles: {}", roles);
+                    return roles.stream()
+                            .anyMatch(role -> roleName.equals(role.getName()));
+                }
+                return false;
+            } finally {
+                FeignConfig.clearAdminToken();
             }
-            return false;
         } catch (Exception e) {
             log.error("Error verifying role assignment", e);
             return false;
@@ -253,13 +222,12 @@ public class KeycloakService {
         }
 
         try {
-            String deleteUrl = keycloakUrl + "/admin/realms/" + realm + "/users/" + userId;
-            HttpRequest deleteRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(deleteUrl))
-                    .header("Authorization", "Bearer " + adminToken)
-                    .DELETE()
-                    .build();
-            httpClient.send(deleteRequest, HttpResponse.BodyHandlers.ofString());
+            FeignConfig.setAdminToken(adminToken);
+            try {
+                adminClient.deleteUser(realm, userId);
+            } finally {
+                FeignConfig.clearAdminToken();
+            }
         } catch (Exception e) {
             log.error("Error deleting user", e);
         }
@@ -267,20 +235,25 @@ public class KeycloakService {
 
     public Map<String, Object> login(String username, String password) {
         try {
-            String tokenUrl = keycloakUrl + "/realms/" + realm + "/protocol/openid-connect/token";
-            String body = "grant_type=password&client_id=" + clientId + "&username=" + username + "&password=" + password;
+            Map<String, Object> formParams = new HashMap<>();
+            formParams.put("grant_type", "password");
+            formParams.put("client_id", clientId);
+            formParams.put("username", username);
+            formParams.put("password", password);
+            
+            KeycloakTokenResponse response = tokenClient.login(realm, formParams);
 
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(tokenUrl))
-                    .header("Content-Type", "application/x-www-form-urlencoded")
-                    .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .build();
-
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() == 200) {
-                return objectMapper.readValue(response.body(), Map.class);
+            if (response != null) {
+                Map<String, Object> result = new HashMap<>();
+                result.put("access_token", response.getAccessToken());
+                result.put("refresh_token", response.getRefreshToken());
+                result.put("id_token", response.getIdToken());
+                result.put("token_type", response.getTokenType());
+                result.put("expires_in", response.getExpiresIn());
+                result.put("refresh_expires_in", response.getRefreshExpiresIn());
+                return result;
             } else {
-                log.error("Failed to login. Status: {}, Body: {}", response.statusCode(), response.body());
+                log.error("Failed to login. Response is null");
                 throw new RuntimeException("Invalid username or password");
             }
         } catch (Exception e) {
@@ -291,20 +264,24 @@ public class KeycloakService {
 
     public Map<String, Object> refreshToken(String refreshToken) {
         try {
-            String tokenUrl = keycloakUrl + "/realms/" + realm + "/protocol/openid-connect/token";
-            String body = "grant_type=refresh_token&client_id=" + clientId + "&refresh_token=" + refreshToken;
+            Map<String, Object> formParams = new HashMap<>();
+            formParams.put("grant_type", "refresh_token");
+            formParams.put("client_id", clientId);
+            formParams.put("refresh_token", refreshToken);
+            
+            KeycloakTokenResponse response = tokenClient.refreshToken(realm, formParams);
 
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(tokenUrl))
-                    .header("Content-Type", "application/x-www-form-urlencoded")
-                    .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .build();
-
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() == 200) {
-                return objectMapper.readValue(response.body(), Map.class);
+            if (response != null) {
+                Map<String, Object> result = new HashMap<>();
+                result.put("access_token", response.getAccessToken());
+                result.put("refresh_token", response.getRefreshToken());
+                result.put("id_token", response.getIdToken());
+                result.put("token_type", response.getTokenType());
+                result.put("expires_in", response.getExpiresIn());
+                result.put("refresh_expires_in", response.getRefreshExpiresIn());
+                return result;
             } else {
-                log.error("Failed to refresh token. Status: {}, Body: {}", response.statusCode(), response.body());
+                log.error("Failed to refresh token. Response is null");
                 throw new RuntimeException("Invalid refresh token");
             }
         } catch (Exception e) {
@@ -320,32 +297,27 @@ public class KeycloakService {
         }
 
         try {
-            String userUrl = keycloakUrl + "/admin/realms/" + realm + "/users/" + userId;
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(userUrl))
-                    .header("Authorization", "Bearer " + adminToken)
-                    .GET()
-                    .build();
+            FeignConfig.setAdminToken(adminToken);
+            try {
+                KeycloakUser keycloakUser = adminClient.getUser(realm, userId);
+                if (keycloakUser == null) {
+                    throw new RuntimeException("User not found");
+                }
 
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() == 200) {
-                Map<String, Object> userData = objectMapper.readValue(response.body(), Map.class);
-
-                // Get user roles
                 List<String> roles = getUserRoles(userId, adminToken);
 
                 return UserInfo.builder()
-                        .id((String) userData.get("id"))
-                        .username((String) userData.get("username"))
-                        .email((String) userData.get("email"))
-                        .firstName((String) userData.get("firstName"))
-                        .lastName((String) userData.get("lastName"))
-                        .enabled((Boolean) userData.get("enabled"))
-                        .emailVerified((Boolean) userData.get("emailVerified"))
+                        .id(keycloakUser.getId())
+                        .username(keycloakUser.getUsername())
+                        .email(keycloakUser.getEmail())
+                        .firstName(keycloakUser.getFirstName())
+                        .lastName(keycloakUser.getLastName())
+                        .enabled(keycloakUser.getEnabled())
+                        .emailVerified(keycloakUser.getEmailVerified())
                         .roles(roles)
                         .build();
-            } else {
-                throw new RuntimeException("User not found");
+            } finally {
+                FeignConfig.clearAdminToken();
             }
         } catch (Exception e) {
             log.error("Error getting user info", e);
@@ -355,19 +327,16 @@ public class KeycloakService {
 
     private List<String> getUserRoles(String userId, String adminToken) {
         try {
-            String rolesUrl = keycloakUrl + "/admin/realms/" + realm + "/users/" + userId + "/role-mappings/realm";
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(rolesUrl))
-                    .header("Authorization", "Bearer " + adminToken)
-                    .GET()
-                    .build();
-
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() == 200) {
-                List<Map<String, Object>> roles = objectMapper.readValue(response.body(), List.class);
-                return roles.stream()
-                        .map(role -> (String) role.get("name"))
-                        .toList();
+            FeignConfig.setAdminToken(adminToken);
+            try {
+                List<KeycloakRole> roles = adminClient.getUserRoles(realm, userId);
+                if (roles != null) {
+                    return roles.stream()
+                            .map(KeycloakRole::getName)
+                            .collect(Collectors.toList());
+                }
+            } finally {
+                FeignConfig.clearAdminToken();
             }
         } catch (Exception e) {
             log.error("Error getting user roles", e);
@@ -382,52 +351,35 @@ public class KeycloakService {
         }
 
         try {
-            String userUrl = keycloakUrl + "/admin/realms/" + realm + "/users/" + userId;
+            FeignConfig.setAdminToken(adminToken);
+            try {
+                KeycloakUser keycloakUser = adminClient.getUser(realm, userId);
+                if (keycloakUser == null) {
+                    throw new RuntimeException("User not found");
+                }
 
-            // Get existing user data
-            HttpRequest getRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(userUrl))
-                    .header("Authorization", "Bearer " + adminToken)
-                    .GET()
-                    .build();
+                if (updateRequest.getEmail() != null) {
+                    keycloakUser.setEmail(updateRequest.getEmail());
+                }
+                if (updateRequest.getFirstName() != null) {
+                    keycloakUser.setFirstName(updateRequest.getFirstName());
+                }
+                if (updateRequest.getLastName() != null) {
+                    keycloakUser.setLastName(updateRequest.getLastName());
+                }
+                if (updateRequest.getEnabled() != null) {
+                    keycloakUser.setEnabled(updateRequest.getEnabled());
+                }
+                if (updateRequest.getEmailVerified() != null) {
+                    keycloakUser.setEmailVerified(updateRequest.getEmailVerified());
+                }
 
-            HttpResponse<String> getResponse = httpClient.send(getRequest, HttpResponse.BodyHandlers.ofString());
-            if (getResponse.statusCode() != 200) {
-                throw new RuntimeException("User not found");
-            }
-
-            Map<String, Object> userData = objectMapper.readValue(getResponse.body(), Map.class);
-
-            // Update fields
-            if (updateRequest.getEmail() != null) {
-                userData.put("email", updateRequest.getEmail());
-            }
-            if (updateRequest.getFirstName() != null) {
-                userData.put("firstName", updateRequest.getFirstName());
-            }
-            if (updateRequest.getLastName() != null) {
-                userData.put("lastName", updateRequest.getLastName());
-            }
-            if (updateRequest.getEnabled() != null) {
-                userData.put("enabled", updateRequest.getEnabled());
-            }
-            if (updateRequest.getEmailVerified() != null) {
-                userData.put("emailVerified", updateRequest.getEmailVerified());
-            }
-
-            String jsonBody = objectMapper.writeValueAsString(userData);
-
-            HttpRequest putRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(userUrl))
-                    .header("Authorization", "Bearer " + adminToken)
-                    .header("Content-Type", "application/json")
-                    .PUT(HttpRequest.BodyPublishers.ofString(jsonBody))
-                    .build();
-
-            HttpResponse<String> putResponse = httpClient.send(putRequest, HttpResponse.BodyHandlers.ofString());
-            if (putResponse.statusCode() != 204) {
-                log.error("Failed to update user. Status: {}, Body: {}", putResponse.statusCode(), putResponse.body());
-                throw new RuntimeException("Failed to update user");
+                adminClient.updateUser(realm, userId, keycloakUser);
+            } catch (Exception e) {
+                log.error("Failed to update user", e);
+                throw new RuntimeException("Failed to update user", e);
+            } finally {
+                FeignConfig.clearAdminToken();
             }
         } catch (Exception e) {
             log.error("Error updating user", e);
@@ -437,13 +389,11 @@ public class KeycloakService {
 
     public UserInfo getCurrentUserInfo(String token) {
         try {
-            // Parse JWT token to get user info
             String[] parts = token.split("\\.");
             if (parts.length != 3) {
                 throw new RuntimeException("Invalid token format");
             }
 
-            // Decode JWT payload (add padding if needed)
             String payload = parts[1];
             switch (payload.length() % 4) {
                 case 2: payload += "=="; break;
@@ -462,6 +412,15 @@ public class KeycloakService {
         } catch (Exception e) {
             log.error("Error getting current user info from token", e);
             throw new RuntimeException("Failed to get user info from token: " + e.getMessage(), e);
+        }
+    }
+
+    public void validateRoleExists(String role) {
+        if (!this.roleExists(role)) {
+            log.error("Role '{}' does not exist in realm. Please create it in Keycloak first.", role);
+            throw new RuntimeException(
+                    "Role '" + role + "' does not exist in Keycloak. " +
+                            "Please contact administrator or create the role in Keycloak Admin Console.");
         }
     }
 }
