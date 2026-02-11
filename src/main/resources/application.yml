@@ -4,22 +4,29 @@ server:
 spring:
   application:
     name: auth-service
-  
+  # БД: в Docker — postgres:5432/microservices_db (задаётся через env в docker-compose)
+  # локально — localhost:5433/microservices_db (порт 5433 = маппинг postgres из docker)
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5433/microservices_db}
+    username: ${SPRING_DATASOURCE_USERNAME:postgres}
+    password: ${SPRING_DATASOURCE_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
   jackson:
     serialization:
       write-dates-as-timestamps: false
     default-property-inclusion: non_null
 
-keycloak:
-  url: ${KEYCLOAK_URL:http://localhost:8080}
-  realm: 'microservices-realm'
-  client-id: ${KEYCLOAK_CLIENT_ID:microservices-client}
-  admin:
-    username: ${KEYCLOAK_ADMIN_USERNAME:admin}
-    password: ${KEYCLOAK_ADMIN_PASSWORD:admin}
-    client-id: ${KEYCLOAK_ADMIN_CLIENT_ID:auth-service-admin}
-    client-secret: ${KEYCLOAK_ADMIN_CLIENT_SECRET:4A0jbDtv3SkkyxrdtWmdLrYWc6aH4pNz}
-  jwks-uri: ${KEYCLOAK_JWKS_URI:http://localhost:8080/realms/microservices-realm/protocol/openid-connect/certs}
+jwt:
+  secret: ${JWT_SECRET:your-256-bit-secret-change-in-production-min-32-chars}
+  access-ttl-seconds: 3600
+  refresh-ttl-seconds: 604800
 
 management:
   endpoints:

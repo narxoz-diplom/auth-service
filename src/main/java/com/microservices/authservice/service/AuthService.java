@@ -19,22 +19,16 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class AuthService {
 
-    private final KeycloakService keycloakService;
+    private final LocalAuthService localAuthService;
 
     public RegistrationResponse register(RegistrationRequest request) {
         String role = validateAndNormalizeRole(request.getRole());
         request.setRole(role);
 
-        keycloakService.validateRoleExists(role);
+        localAuthService.validateRoleExists(role);
+        String userId = localAuthService.createUser(request);
+        localAuthService.assignRole(userId, role);
 
-        String userId = keycloakService.createUser(request);
-
-        if (!keycloakService.assignRole(userId, role)) {
-            log.warn("Failed to assign role {} to user {}, but user was created.", role, userId);
-            throw new RuntimeException("User created but failed to assign role");
-        }
-
-        log.info("User registered: {} with role: {}", request.getUsername(), role);
         return RegistrationResponse.builder()
                 .message("User registered successfully")
                 .username(request.getUsername())
@@ -43,19 +37,18 @@ public class AuthService {
     }
 
     public TokenResponse login(String username, String password) {
-        Map<String, Object> tokenData = keycloakService.login(username, password);
+        Map<String, Object> tokenData = localAuthService.login(username, password);
         return buildTokenResponse(tokenData);
     }
 
     public TokenResponse refreshToken(String refreshToken) {
-        Map<String, Object> tokenData = keycloakService.refreshToken(refreshToken);
+        Map<String, Object> tokenData = localAuthService.refreshToken(refreshToken);
         return buildTokenResponse(tokenData);
     }
 
     public UserInfo getCurrentUser(Authentication authentication) {
         Jwt jwt = extractJwt(authentication);
-        String token = jwt.getTokenValue();
-        return keycloakService.getCurrentUserInfo(token);
+        return localAuthService.getCurrentUserInfo(jwt.getTokenValue());
     }
 
     public UserInfo getUser(String userId, Authentication authentication) {
@@ -66,11 +59,7 @@ public class AuthService {
             throw new ForbiddenException("Access denied");
         }
 
-        try {
-            return keycloakService.getUserInfo(userId);
-        } catch (RuntimeException e) {
-            throw new NotFoundException(e.getMessage());
-        }
+        return localAuthService.getUserInfo(userId);
     }
 
     public void updateUser(String userId, UpdateUserRequest request, Authentication authentication) {
@@ -81,11 +70,7 @@ public class AuthService {
             throw new ForbiddenException("Access denied");
         }
 
-        try {
-            keycloakService.updateUser(userId, request);
-        } catch (RuntimeException e) {
-            throw new NotFoundException(e.getMessage());
-        }
+        localAuthService.updateUser(userId, request);
     }
 
     public void deleteUser(String userId, Authentication authentication) {
@@ -95,7 +80,7 @@ public class AuthService {
             throw new ForbiddenException("Admin access required");
         }
 
-        keycloakService.deleteUser(userId);
+        localAuthService.deleteUser(userId);
     }
 
     private TokenResponse buildTokenResponse(Map<String, Object> tokenData) {
@@ -118,13 +103,15 @@ public class AuthService {
 
     private boolean isAdmin(Jwt jwt) {
         try {
-            Map<String, Object> realmAccess = jwt.getClaim("realm_access");
-            if (realmAccess != null) {
-                List<String> roles = (List<String>) realmAccess.get("roles");
-                return roles != null && roles.contains("admin");
+            Object rolesClaim = jwt.getClaim("roles");
+            if (rolesClaim instanceof List && ((List<?>) rolesClaim).contains("admin")) return true;
+            Object realmAccess = jwt.getClaim("realm_access");
+            if (realmAccess instanceof Map) {
+                Object r = ((Map<?, ?>) realmAccess).get("roles");
+                if (r instanceof List) return ((List<?>) r).contains("admin");
             }
         } catch (Exception e) {
-            log.debug("Could not parse realm_access claim", e);
+            log.debug("Could not parse roles claim", e);
         }
         return false;
     }
@@ -151,15 +138,12 @@ public class AuthService {
 
     private String validateAndNormalizeRole(String role) {
         if (role == null || role.trim().isEmpty()) {
-            throw new DataValidationException("Role must be 'client' or 'teacher'");
+            throw new DataValidationException("Role must be 'client', 'teacher' or 'admin'");
         }
-        
         String normalizedRole = role.toLowerCase().trim();
-        
-        if (!normalizedRole.equals("client") && !normalizedRole.equals("teacher")) {
-            throw new DataValidationException("Role must be 'client' or 'teacher'");
+        if (!List.of("client", "teacher", "admin").contains(normalizedRole)) {
+            throw new DataValidationException("Role must be 'client', 'teacher' or 'admin'");
         }
-        
         return normalizedRole;
     }
 }
