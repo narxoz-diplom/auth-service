@@ -30,13 +30,17 @@ public class JwtService {
         this.refreshTtlSeconds = refreshTtlSeconds;
     }
 
-    public String createAccessToken(String userId, String username, List<String> roles) {
+    public String createAccessToken(String userId, String username, List<String> roles, String email) {
         Date now = new Date();
         Date exp = new Date(now.getTime() + accessTtlSeconds * 1000L);
-        return Jwts.builder()
+        var builder = Jwts.builder()
                 .subject(userId)
                 .claim("preferred_username", username)
-                .claim("realm_access", Map.of("roles", roles))
+                .claim("realm_access", Map.of("roles", roles));
+        if (email != null && !email.isBlank()) {
+            builder.claim("email", email);
+        }
+        return builder
                 .claim("resource_access", Map.of("microservices-client", Map.of("roles", roles)))
                 .claim("roles", roles)
                 .issuedAt(now)

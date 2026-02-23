@@ -127,7 +127,7 @@ public class LocalAuthService {
 
     private Map<String, Object> buildTokenMap(User user) {
         List<String> roles = List.of(user.getRole());
-        String accessToken = jwtService.createAccessToken(user.getId(), user.getUsername(), roles);
+        String accessToken = jwtService.createAccessToken(user.getId(), user.getUsername(), roles, user.getEmail());
         String refreshToken = jwtService.createRefreshToken(user.getId());
         Map<String, Object> map = new HashMap<>();
         map.put("access_token", accessToken);
