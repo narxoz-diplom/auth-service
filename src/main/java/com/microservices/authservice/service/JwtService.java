@@ -69,20 +69,4 @@ public class JwtService {
             return null;
         }
     }
-
-    @SuppressWarnings("unchecked")
-    public List<String> getRoles(Claims claims) {
-        Object realmAccess = claims.get("realm_access");
-        if (realmAccess instanceof Map) {
-            Object roles = ((Map<?, ?>) realmAccess).get("roles");
-            if (roles instanceof List) {
-                return ((List<?>) roles).stream().map(String::valueOf).collect(Collectors.toList());
-            }
-        }
-        Object rolesClaim = claims.get("roles");
-        if (rolesClaim instanceof List) {
-            return ((List<?>) rolesClaim).stream().map(String::valueOf).collect(Collectors.toList());
-        }
-        return List.of();
-    }
 }
