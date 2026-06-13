@@ -3,6 +3,7 @@ package com.microservices.authservice.service;
 import com.microservices.authservice.dto.RegistrationRequest;
 import com.microservices.authservice.dto.UpdateUserRequest;
 import com.microservices.authservice.dto.UserInfo;
+import com.microservices.authservice.dto.UserPublicProfileDto;
 import com.microservices.authservice.exception.NotFoundException;
 import com.microservices.authservice.model.User;
 import com.microservices.authservice.repository.UserRepository;
@@ -14,7 +15,9 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -105,6 +108,56 @@ public class LocalAuthService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new NotFoundException("User not found"));
         return toUserInfo(user);
+    }
+
+    public List<UserPublicProfileDto> resolvePublicProfiles(List<String> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return List.of();
+        }
+        LinkedHashMap<String, UserPublicProfileDto> byId = new LinkedHashMap<>();
+        for (String rawId : userIds) {
+            if (rawId == null || rawId.isBlank()) {
+                continue;
+            }
+            String userId = rawId.trim();
+            if (byId.containsKey(userId)) {
+                continue;
+            }
+            userRepository.findById(userId).ifPresent(user -> byId.put(userId, toPublicProfile(user)));
+        }
+        return new ArrayList<>(byId.values());
+    }
+
+    private UserPublicProfileDto toPublicProfile(User user) {
+        String fullName = buildFullName(user.getFirstName(), user.getLastName(), user.getUsername());
+        return UserPublicProfileDto.builder()
+                .id(user.getId())
+                .username(user.getUsername())
+                .email(user.getEmail())
+                .firstName(user.getFirstName())
+                .lastName(user.getLastName())
+                .fullName(fullName)
+                .build();
+    }
+
+    private String buildFullName(String firstName, String lastName, String username) {
+        StringBuilder sb = new StringBuilder();
+        if (firstName != null && !firstName.isBlank()) {
+            sb.append(firstName.trim());
+        }
+        if (lastName != null && !lastName.isBlank()) {
+            if (!sb.isEmpty()) {
+                sb.append(' ');
+            }
+            sb.append(lastName.trim());
+        }
+        if (!sb.isEmpty()) {
+            return sb.toString();
+        }
+        if (username != null && !username.isBlank()) {
+            return username.trim();
+        }
+        return "User";
     }
 
     @Transactional

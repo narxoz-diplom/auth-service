@@ -9,6 +9,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -46,6 +47,13 @@ public class AuthController {
     @ResponseStatus(HttpStatus.OK)
     public UserInfo getUser(@PathVariable String userId, Authentication authentication) {
         return authService.getUser(userId, authentication);
+    }
+
+    @PostMapping("/users/resolve")
+    @ResponseStatus(HttpStatus.OK)
+    public List<UserPublicProfileDto> resolveUsers(@RequestBody BulkUserResolveRequest request,
+                                                   Authentication authentication) {
+        return authService.resolveUsers(request, authentication);
     }
 
     @PutMapping("/user/{userId}")

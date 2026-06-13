@@ -62,6 +62,14 @@ public class AuthService {
         return localAuthService.getUserInfo(userId);
     }
 
+    public List<UserPublicProfileDto> resolveUsers(BulkUserResolveRequest request, Authentication authentication) {
+        extractJwt(authentication);
+        List<String> userIds = request != null && request.getUserIds() != null
+                ? request.getUserIds()
+                : List.of();
+        return localAuthService.resolvePublicProfiles(userIds);
+    }
+
     public void updateUser(String userId, UpdateUserRequest request, Authentication authentication) {
         Jwt jwt = extractJwt(authentication);
         String currentUserId = jwt.getSubject();
