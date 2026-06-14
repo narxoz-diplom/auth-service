@@ -80,6 +80,11 @@ public class AuthService {
         localAuthService.updateUser(userId, request);
     }
 
+    public UserInfo updateUserAndReturn(String userId, UpdateUserRequest request, Authentication authentication) {
+        updateUser(userId, request, authentication);
+        return localAuthService.getUserInfo(userId);
+    }
+
     public void deleteUser(String userId, Authentication authentication) {
         Jwt jwt = extractJwt(authentication);
 

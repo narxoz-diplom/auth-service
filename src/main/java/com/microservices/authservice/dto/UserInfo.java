@@ -20,5 +20,7 @@ public class UserInfo {
     private Boolean enabled;
     private Boolean emailVerified;
     private List<String> roles;
+    /** Public URL path, e.g. /api/files/{id}/content */
+    private String avatarUrl;
 }
 

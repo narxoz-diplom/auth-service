@@ -137,7 +137,15 @@ public class LocalAuthService {
                 .firstName(user.getFirstName())
                 .lastName(user.getLastName())
                 .fullName(fullName)
+                .avatarUrl(buildAvatarUrl(user.getAvatarFileId()))
                 .build();
+    }
+
+    private static String buildAvatarUrl(Long avatarFileId) {
+        if (avatarFileId == null) {
+            return null;
+        }
+        return "/api/files/" + avatarFileId + "/content";
     }
 
     private String buildFullName(String firstName, String lastName, String username) {
@@ -167,6 +175,11 @@ public class LocalAuthService {
         if (request.getFirstName() != null) user.setFirstName(request.getFirstName());
         if (request.getLastName() != null) user.setLastName(request.getLastName());
         if (request.getEmail() != null) user.setEmail(request.getEmail());
+        if (Boolean.TRUE.equals(request.getClearAvatar())) {
+            user.setAvatarFileId(null);
+        } else if (request.getAvatarFileId() != null) {
+            user.setAvatarFileId(request.getAvatarFileId());
+        }
         userRepository.save(user);
     }
 
@@ -201,6 +214,7 @@ public class LocalAuthService {
                 .enabled(user.getEnabled())
                 .emailVerified(true)
                 .roles(List.of(user.getRole()))
+                .avatarUrl(buildAvatarUrl(user.getAvatarFileId()))
                 .build();
     }
 }

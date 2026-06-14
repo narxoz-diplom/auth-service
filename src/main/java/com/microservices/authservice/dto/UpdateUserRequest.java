@@ -9,5 +9,7 @@ public class UpdateUserRequest {
     private String lastName;
     private Boolean enabled;
     private Boolean emailVerified;
+    private Long avatarFileId;
+    private Boolean clearAvatar;
 }
 

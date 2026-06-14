@@ -39,6 +39,10 @@ public class User {
     @Column(nullable = false)
     private Boolean enabled = true;
 
+    /** Reference to file-service record for profile avatar image. */
+    @Column(name = "avatar_file_id")
+    private Long avatarFileId;
+
     @PrePersist
     public void prePersist() {
         if (id == null) {

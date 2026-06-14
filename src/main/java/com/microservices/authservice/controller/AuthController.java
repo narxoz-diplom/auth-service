@@ -58,11 +58,10 @@ public class AuthController {
 
     @PutMapping("/user/{userId}")
     @ResponseStatus(HttpStatus.OK)
-    public Map<String, String> updateUser(@PathVariable String userId,
-                                          @Valid @RequestBody UpdateUserRequest request,
-                                          Authentication authentication) {
-        authService.updateUser(userId, request, authentication);
-        return Map.of("message", "User updated successfully");
+    public UserInfo updateUser(@PathVariable String userId,
+                               @Valid @RequestBody UpdateUserRequest request,
+                               Authentication authentication) {
+        return authService.updateUserAndReturn(userId, request, authentication);
     }
 
     @DeleteMapping("/user/{userId}")
