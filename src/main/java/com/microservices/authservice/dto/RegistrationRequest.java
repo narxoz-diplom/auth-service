@@ -21,7 +21,7 @@ public class RegistrationRequest {
     private String firstName;
     private String lastName;
 
-    @NotBlank(message = "Role is required")
+    /** Ignored on self-registration — new users are always assigned role {@code client}. */
     private String role;
 }
 

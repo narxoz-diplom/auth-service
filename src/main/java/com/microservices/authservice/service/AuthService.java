@@ -1,7 +1,6 @@
 package com.microservices.authservice.service;
 
 import com.microservices.authservice.dto.*;
-import com.microservices.authservice.exception.DataValidationException;
 import com.microservices.authservice.exception.ForbiddenException;
 import com.microservices.authservice.exception.NotFoundException;
 import com.microservices.authservice.exception.UnauthorizedException;
@@ -22,7 +21,7 @@ public class AuthService {
     private final LocalAuthService localAuthService;
 
     public RegistrationResponse register(RegistrationRequest request) {
-        String role = validateAndNormalizeRole(request.getRole());
+        String role = resolveSelfRegistrationRole(request.getRole());
         request.setRole(role);
 
         localAuthService.validateRoleExists(role);
@@ -144,15 +143,18 @@ public class AuthService {
         return null;
     }
 
-    private String validateAndNormalizeRole(String role) {
-        if (role == null || role.trim().isEmpty()) {
-            throw new DataValidationException("Role must be 'client', 'teacher' or 'admin'");
+    /**
+     * Self-registration always creates a student account.
+     * Privileged roles (teacher/admin) must be assigned by an administrator.
+     */
+    private String resolveSelfRegistrationRole(String role) {
+        if (role != null && !role.trim().isEmpty()) {
+            String normalizedRole = role.toLowerCase().trim();
+            if ("teacher".equals(normalizedRole) || "admin".equals(normalizedRole)) {
+                log.warn("Rejected privileged self-registration role: {}", normalizedRole);
+            }
         }
-        String normalizedRole = role.toLowerCase().trim();
-        if (!List.of("client", "teacher", "admin").contains(normalizedRole)) {
-            throw new DataValidationException("Role must be 'client', 'teacher' or 'admin'");
-        }
-        return normalizedRole;
+        return "client";
     }
 }
 
